@@ -1,4 +1,4 @@
-# app.py - Optimized InsightFace for Cloud Run
+# app.py - Force Initializatioกกกกกกn
 import os
 import cv2
 import pickle
@@ -13,14 +13,10 @@ from PIL import Image
 import logging
 import traceback
 import gc
-import threading
 
 # ตั้งค่า logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-app = Flask(__name__)
-CORS(app)
 
 # ---- Configuration ----
 MIN_FACE_W = 150
@@ -36,64 +32,68 @@ known_encs = None
 known_ids = None
 metadata = {}
 last_scan = {}
-init_lock = threading.Lock()
-is_initialized = False
 
-def init_face_recognition():
-    """เริ่มต้นระบบรู้จำใบหน้า - แบบ lazy loading"""
-    global face_app, known_encs, known_ids, metadata, is_initialized
+# ---- Immediate Initialization ----
+logger.info("🚀 STARTING FACE RECOGNITION INITIALIZATION...")
+
+try:
+    # ตรวจสอบไฟล์ทันที
+    pkl_file = 'encodings_insightface.pkl'
+    logger.info(f"📁 Current directory: {os.getcwd()}")
+    logger.info(f"📁 Files in directory: {os.listdir('.')}")
     
-    with init_lock:
-        if is_initialized:
-            return True
-            
-        try:
-            logger.info("🚀 Starting InsightFace initialization...")
-            
-            # ตรวจสอบไฟล์
-            pkl_file = 'encodings_insightface.pkl'
-            if not os.path.exists(pkl_file):
-                logger.error(f"❌ File not found: {pkl_file}")
-                return False
-                
-            logger.info(f"📄 Loading {pkl_file} ({os.path.getsize(pkl_file)} bytes)")
-            
-            # โหลดข้อมูลใบหน้าก่อน (ใช้ memory น้อย)
-            with open(pkl_file, 'rb') as f:
-                data = pickle.load(f)
-            
-            if 'embeddings' not in data or 'ids' not in data:
-                logger.error("❌ Invalid data format")
-                return False
-            
+    if os.path.exists(pkl_file):
+        file_size = os.path.getsize(pkl_file)
+        logger.info(f"✅ Found {pkl_file} ({file_size} bytes)")
+        
+        # โหลดข้อมูลทันที
+        with open(pkl_file, 'rb') as f:
+            data = pickle.load(f)
+        
+        logger.info(f"📋 Data keys: {list(data.keys())}")
+        
+        if 'embeddings' in data and 'ids' in data:
             # ประมวลผล embeddings
             embeddings_raw = data['embeddings']
             known_encs = np.asarray(embeddings_raw, dtype=np.float32)
             known_encs = known_encs / (np.linalg.norm(known_encs, axis=1, keepdims=True) + 1e-6)
             known_ids = data['ids']
             
-            logger.info(f"✅ Loaded {len(known_ids)} face encodings")
+            logger.info(f"✅ SUCCESS: Loaded {len(known_ids)} face encodings")
+            logger.info(f"📋 Employee IDs: {known_ids}")
             
-            # Clear data from memory
+            # ลบข้อมูลที่ไม่ใช้
             del data, embeddings_raw
             gc.collect()
             
-            # โหลด metadata
-            if os.path.exists('metadata.csv'):
-                with open('metadata.csv', 'r', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    metadata = {row['id']: row for row in reader}
-                logger.info(f"✅ Loaded metadata for {len(metadata)} employees")
+        else:
+            logger.error(f"❌ Invalid data format in {pkl_file}")
             
-            # โหลด InsightFace ทีหลัง (เมื่อต้องใช้จริง)
-            logger.info("✅ Basic initialization completed")
-            is_initialized = True
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Initialization failed: {e}")
-            logger.error(traceback.format_exc())
-            return False
+    else:
+        logger.error(f"❌ File not found: {pkl_file}")
+        
+    # โหลด metadata
+    if os.path.exists('metadata.csv'):
+        with open('metadata.csv', 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            metadata = {row['id']: row for row in reader}
+        logger.info(f"✅ Loaded metadata for {len(metadata)} employees")
+    else:
+        logger.warning("⚠️ metadata.csv not found")
+        
+except Exception as e:
+    logger.error(f"❌ CRITICAL ERROR during initialization: {e}")
+    logger.error(traceback.format_exc())
+
+# เช็คผลลัพธ์
+if known_encs is not None and known_ids is not None:
+    logger.info("🎉 FACE RECOGNITION READY!")
+else:
+    logger.error("💥 FACE RECOGNITION FAILED TO INITIALIZE!")
+
+# ---- Create Flask App ----
+app = Flask(__name__)
+CORS(app)
 
 def get_face_app():
     """โหลด InsightFace แบบ lazy loading"""
@@ -103,7 +103,6 @@ def get_face_app():
         try:
             logger.info("🔄 Loading InsightFace model...")
             
-            # ใช้ providers ที่เหมาะสม
             from insightface.app import FaceAnalysis
             face_app = FaceAnalysis(
                 name='buffalo_l', 
@@ -112,13 +111,12 @@ def get_face_app():
             )
             face_app.prepare(ctx_id=0, det_size=(640, 640))
             
-            logger.info("✅ InsightFace model loaded")
-            
-            # Force garbage collection
+            logger.info("✅ InsightFace model loaded successfully")
             gc.collect()
             
         except Exception as e:
             logger.error(f"❌ Failed to load InsightFace: {e}")
+            logger.error(traceback.format_exc())
             face_app = None
     
     return face_app
@@ -144,7 +142,7 @@ def detect_faces(frame):
         return [{'error': 'No frame provided'}]
         
     if known_encs is None or known_ids is None:
-        return [{'error': 'No face encodings loaded'}]
+        return [{'error': 'Face encodings not loaded - check logs for initialization errors'}]
     
     try:
         # ตรวจสอบความคมชัด
@@ -154,25 +152,25 @@ def detect_faces(frame):
         if blur_score < BLUR_VAR_TH:
             return [{'error': 'Image too blurry', 'blur_score': blur_score}]
         
-        # โหลด face_app แบบ lazy
+        # โหลด face_app
         app = get_face_app()
         if app is None:
-            return [{'error': 'Face recognition model not available'}]
+            return [{'error': 'InsightFace model failed to load - check logs'}]
         
         # ตรวจจับใบหน้า
         faces = app.get(frame)
         results = []
         now = datetime.now().timestamp()
-        h, w = frame.shape[:2]
         
-        logger.info(f"🔍 Detected {len(faces)} faces")
+        logger.info(f"🔍 Detected {len(faces)} faces in image")
         
         for i, face in enumerate(faces):
             try:
                 x1, y1, x2, y2 = map(int, face.bbox)
                 face_width = x2 - x1
                 
-                # ตรวจสอบขนาดใบหน้า
+                logger.info(f"👤 Face {i+1}: bbox=({x1},{y1},{x2},{y2}), width={face_width}")
+                
                 if face_width < MIN_FACE_W:
                     results.append({
                         'bbox': [x1, y1, x2, y2],
@@ -187,24 +185,26 @@ def detect_faces(frame):
                 min_idx = np.argmin(distances)
                 min_dist = distances[min_idx]
                 
+                logger.info(f"📏 Face {i+1}: min_distance={min_dist:.4f}, threshold={SIM_THR}")
+                
                 if min_dist < SIM_THR:
                     emp_id = known_ids[min_idx]
                     confidence = (SIM_THR - min_dist) / SIM_THR
                     
-                    logger.info(f"✅ Recognized: {emp_id} (dist: {min_dist:.3f})")
+                    logger.info(f"✅ RECOGNIZED: {emp_id} (confidence: {confidence:.3f})")
                     
                     # ตรวจสอบ cooldown
                     if emp_id in last_scan and now - last_scan[emp_id] < COOLDOWN_SEC:
                         results.append({
                             'bbox': [x1, y1, x2, y2],
-                            'label': f'{emp_id} (Wait)',
+                            'label': f'{emp_id} (Wait {int(COOLDOWN_SEC - (now - last_scan[emp_id]))}s)',
                             'status': 'cooldown',
                             'employee_id': emp_id
                         })
                         continue
                     
-                    # Mock การเข้าออก
-                    ins, outs = [], []
+                    # ตรวจสอบการเข้าออก (Mock)
+                    ins, outs = [], []  # Mock - ในการใช้งานจริงดึงจาก database
                     event = 'IN' if not ins else ('OUT' if not outs else None)
                     
                     if event:
@@ -221,30 +221,37 @@ def detect_faces(frame):
                             'employee_name': metadata.get(emp_id, {}).get('full_name', '')
                         })
                         
-                        logger.info(f"🎯 Event: {emp_id} {event}")
+                        logger.info(f"🎯 EVENT RECORDED: {emp_id} {event}")
                     else:
                         results.append({
                             'bbox': [x1, y1, x2, y2],
-                            'label': f'{emp_id} (Complete)',
+                            'label': f'{emp_id} (Already scanned today)',
                             'status': 'already_scanned',
                             'employee_id': emp_id
                         })
                 else:
+                    logger.info(f"❓ UNKNOWN FACE: distance={min_dist:.4f} > threshold={SIM_THR}")
                     results.append({
                         'bbox': [x1, y1, x2, y2],
-                        'label': 'Unknown',
+                        'label': 'Unknown Person',
                         'status': 'unknown'
                     })
                     
             except Exception as e:
                 logger.error(f"❌ Error processing face {i+1}: {e}")
+                results.append({
+                    'bbox': [x1, y1, x2, y2],
+                    'label': f'Processing Error',
+                    'status': 'error',
+                    'error': str(e)
+                })
         
-        # Force cleanup
         gc.collect()
         return results
         
     except Exception as e:
-        logger.error(f"❌ Detection error: {e}")
+        logger.error(f"❌ DETECTION ERROR: {e}")
+        logger.error(traceback.format_exc())
         return [{'error': str(e)}]
 
 # ---- API Routes ----
@@ -255,30 +262,29 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'face_recognition_ready': is_initialized,
+        'face_recognition_ready': known_encs is not None and known_ids is not None,
         'encodings_loaded': len(known_ids) if known_ids else 0,
         'employee_ids': known_ids if known_ids else [],
         'metadata_loaded': len(metadata),
         'insightface_loaded': face_app is not None,
-        'version': 'optimized_insightface'
+        'version': 'force_initialization'
     })
 
 @app.route('/detect_face', methods=['POST'])
 def detect_face_api():
     """API สำหรับตรวจจับใบหน้า"""
     try:
-        if not is_initialized:
-            return jsonify({'error': 'System not initialized'}), 503
-            
         data = request.get_json()
         if 'image' not in data:
             return jsonify({'error': 'No image provided'}), 400
         
-        logger.info("🔄 Processing detection request...")
+        logger.info("🔄 PROCESSING FACE DETECTION REQUEST...")
         
         frame = base64_to_opencv(data['image'])
         if frame is None:
             return jsonify({'error': 'Invalid image format'}), 400
+        
+        logger.info(f"📷 Image converted successfully: {frame.shape}")
         
         faces = detect_faces(frame)
         
@@ -292,11 +298,13 @@ def detect_face_api():
         successful_scans = [f for f in faces if f.get('status') == 'success']
         if successful_scans:
             response['successful_scans'] = successful_scans
+            logger.info(f"🎉 SUCCESSFUL SCANS: {[s['employee_id'] for s in successful_scans]}")
         
         return jsonify(response)
         
     except Exception as e:
-        logger.error(f"❌ API Error: {e}")
+        logger.error(f"❌ API ERROR: {e}")
+        logger.error(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
 @app.route('/debug', methods=['GET'])
@@ -304,21 +312,17 @@ def debug_info():
     """ข้อมูล debug"""
     return jsonify({
         'files_in_directory': os.listdir('.'),
-        'is_initialized': is_initialized,
+        'pkl_file_exists': os.path.exists('encodings_insightface.pkl'),
+        'pkl_file_size': os.path.getsize('encodings_insightface.pkl') if os.path.exists('encodings_insightface.pkl') else 0,
+        'face_recognition_ready': known_encs is not None and known_ids is not None,
         'face_app_loaded': face_app is not None,
         'known_encs_shape': known_encs.shape if known_encs is not None else None,
         'known_ids': known_ids if known_ids else [],
         'metadata_keys': list(metadata.keys()),
-        'library': 'insightface_optimized'
+        'working_directory': os.getcwd()
     })
 
 if __name__ == '__main__':
-    logger.info("🚀 Starting Optimized InsightFace API...")
-    
-    # Lazy initialization - จะโหลดตอนต้องใช้
-    if not init_face_recognition():
-        logger.error("❌ Failed to initialize")
-        exit(1)
-    
+    logger.info("🚀 Starting Face Scanner API server...")
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port, debug=False)
